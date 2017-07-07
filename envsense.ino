@@ -1,5 +1,3 @@
-#include <ArduinoJson.h>
-
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
@@ -13,12 +11,55 @@ const char* mqtt_server = "192.168.1.12";
 const char* mqtt_name = "envsense-v1.1";
 const char* mqtt_user = "iot";
 const char* mqtt_pass = "internetofbanana";
-//long reportInterval = 1000;
-long reportInterval = 30000;
+
+#define SERIAL_DEBUG false
+
+long intervalMs = 2000;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 char msg[200];
+
+struct SensorValue {
+  float sigDiff;
+  long maxInterval;
+  const char* topic;
+  long lastTime;
+  float lastValue;
+
+  void sensed(long senseTime, float value) {
+    bool significant = abs(value - lastValue) >= sigDiff;
+    bool aboutTime = abs(senseTime - lastTime) >= maxInterval*1000;
+
+    if (significant || aboutTime) {
+#if SERIAL_DEBUG
+      Serial.print("Sensor ");
+      Serial.print(topic);
+      Serial.print(" ");
+      Serial.print(value);
+      Serial.print(" ");
+      Serial.print(significant ? "sig" : "x");
+      Serial.print(" ");
+      Serial.print(aboutTime ? "time" : "x");
+      Serial.println();
+#endif
+      
+      char val[16];
+      snprintf(val, sizeof(val), "%.2f", value);
+      
+      client.publish(topic, val);
+      lastValue = value;
+      lastTime = senseTime;
+    }
+    
+  }
+};
+
+SensorValue tempVal  = { 0.05, 300, "envsense/sensor/temperature" };
+SensorValue pressVal = { 0.20, 300, "envsense/sensor/pressure" };
+SensorValue humidVal = { 0.30, 300, "envsense/sensor/humidity" };
+SensorValue lightVal = { 0.07, 300, "envsense/sensor/light" };
+
 
 int ldrPin = A0;
 
@@ -50,6 +91,7 @@ void setup() {
     Serial.println("Could not find BME280 sensor!");
     delay(1000);
   }
+  
   //tempSensor.begin();
   
   setupWifi();
@@ -115,40 +157,36 @@ void loop() {
   client.loop();
 
   long now = millis();
+
+  int lightRaw = analogRead(ldrPin);
+  float light = lightRaw/1023.0;
+  float lux = lightToLux(lightRaw);
   
-  if (now - lastReport > reportInterval) {
-    lastReport = now;
+  lightVal.sensed(now, light*100);
 
-    /*
-    // One wire temp
-    tempSensor.requestTemperatures();
-    float tempC = tempSensor.getTempCByIndex(0);
   
-    if (tempC != DEVICE_DISCONNECTED_C) {
-      snprintf(msg, 50, "%.2f", tempC);
-      client.publish("envsense/temp", msg);
-      Serial.println(msg);
-    }
-    */
+  float temperature(NAN), humidity(NAN), pressure(NAN);
+  uint8_t pressureUnit(B001);
+  // unit: B000 = Pa, B001 = hPa, B010 = Hg, B011 = atm, B100 = bar, B101 = torr, B110 = N/m^2, B111 = psi
+  bme.read(pressure, temperature, humidity, true, pressureUnit);
 
-    int lightRaw = analogRead(ldrPin);
-    float light = lightRaw/1023.0;
-    float lux = lightToLux(lightRaw);
+  pressVal.sensed(now, pressure);
+  tempVal.sensed(now, temperature);
+  humidVal.sensed(now, humidity);
 
-    float temperature(NAN), humidity(NAN), pressure(NAN);
-    uint8_t pressureUnit(B001);
-    // unit: B000 = Pa, B001 = hPa, B010 = Hg, B011 = atm, B100 = bar, B101 = torr, B110 = N/m^2, B111 = psi
-    bme.read(pressure, temperature, humidity, true, pressureUnit);
+  delay(intervalMs);
+  
 
+  /*
     if (!isnan(temperature) && !isnan(humidity) && !isnan(pressure)) {
       StaticJsonBuffer<200> jsonBuffer;
       JsonObject& json = jsonBuffer.createObject();
       char pres[16];
       snprintf(pres, sizeof(pres), "%.6f", pressure);
       json.set("pressure", RawJson(pres));
-      json.set("temperature", temperature, 2);
-      json.set("humidity", humidity, 2);
-      json.set("light", light*100, 2);
+      json.set("temperature", temperature);
+      json.set("humidity", humidity);
+      json.set("light", light*100);
       char lx[16];
       snprintf(lx, sizeof(lx), "%.0f", lux);
       json.set("lux", RawJson(lx));
@@ -157,8 +195,7 @@ void loop() {
       client.publish("envsense/sensors", msg);
     }
   }
-  
-  delay(1000);
+    */
   
 }
 
